@@ -1,0 +1,558 @@
+#!/usr/bin/env bash
+# ========================================
+# TuxTuner
+# Enterprise Linux Optimization Script
+# Comprehensive system tuning for performance, security, and stability
+# Koosha Yeganeh - 2025
+# ========================================
+
+set -e
+
+# Display help information for the script usage
+show_help() {
+    cat <<EOF
+Usage: $0 [OPTIONS]
+
+Enterprise Linux System Optimization Tool
+
+Options:
+  --desktop --storage       Optimize for desktop as storage server
+  --desktop --mediaserver   Optimize for desktop as media server
+  --server --storageserver  Optimize for server as storage server
+  --server --mediaserver    Optimize for server as media server
+  --server --idsips         Optimize for server as IDS/IPS
+  --embedded                Optimize for embedded devices
+  
+Distribution-specific desktop optimizations:
+  --ubuntu-desktop          Optimize Ubuntu desktop
+  --debian-desktop          Optimize Debian desktop
+  --fedora-desktop          Optimize Fedora desktop
+  --centos-desktop          Optimize CentOS desktop
+  --opensuse-desktop        Optimize openSUSE desktop
+
+Enterprise-level optimizations:
+  --enterprise-kernel       Apply enterprise kernel tuning
+  --enterprise-services     Optimize enterprise services
+  --enterprise-security     Apply enterprise security hardening
+
+Examples:
+  $0 --ubuntu-desktop --enterprise-security
+  $0 --server --storageserver --enterprise-kernel
+EOF
+}
+
+# Detect the Linux distribution and version
+detect_distro() {
+    # Check if /etc/os-release exists to identify the distribution
+    if [ -f /etc/os-release ]; then
+        . /etc/os-release
+        DISTRO=$ID
+        DISTRO_VERSION=$VERSION_ID
+    else
+        # Fallback to uname if os-release is unavailable
+        DISTRO=$(uname -s)
+    fi
+    echo "Detected distribution: $DISTRO $DISTRO_VERSION"
+}
+
+# Apply enterprise-grade kernel optimizations
+enterprise_kernel_tuning() {
+    echo "=== Applying Enterprise Kernel Tuning ==="
+    
+    # Configure kernel parameters for network, memory, and security
+    sudo bash -c 'cat > /etc/sysctl.d/99-enterprise.conf <<EOF
+# Network performance tuning
+net.core.rmem_max=16777216              # Increase max receive buffer size
+net.core.wmem_max=16777216              # Increase max send buffer size
+net.ipv4.tcp_rmem=4096 87380 16777216   # TCP receive memory tuning
+net.ipv4.tcp_wmem=4096 65536 16777216   # TCP send memory tuning
+net.ipv4.tcp_congestion_control=bbr     # Use BBR congestion control
+net.core.netdev_max_backlog=30000       # Increase network device backlog
+net.core.somaxconn=65535                # Increase socket connections
+net.ipv4.tcp_max_syn_backlog=8192       # Increase SYN backlog
+net.ipv4.tcp_syncookies=1               # Enable SYN cookies for DoS protection
+
+# Memory and process management tuning
+vm.swappiness=10                        # Reduce swap usage
+vm.dirty_ratio=15                       # Limit dirty memory pages
+vm.dirty_background_ratio=5             # Background flush ratio
+vm.overcommit_memory=1                  # Allow memory overcommit
+vm.overcommit_ratio=80                  # Set overcommit ratio
+kernel.pid_max=4194303                  # Increase max PID count
+
+# File system and I/O tuning
+fs.file-max=2097152                     # Increase max open files
+fs.aio-max-nr=1048576                   # Increase max async I/O requests
+fs.inotify.max_user_watches=524288      # Increase inotify watches
+
+# Security-related kernel settings
+kernel.kptr_restrict=2                  # Restrict kernel pointer access
+kernel.dmesg_restrict=1                 # Restrict dmesg access
+kernel.yama.ptrace_scope=2              # Restrict ptrace scope
+EOF'
+    
+    # Apply the kernel parameters
+    sudo sysctl -p /etc/sysctl.d/99-enterprise.conf
+    
+    # Isolate CPUs for enterprise workloads on bare metal
+    if [ -d /sys/devices/system/cpu/isolated ]; then
+        echo "Isolating CPUs for enterprise workloads..."
+        sudo bash -c "echo 2-$(nproc) > /sys/devices/system/cpu/isolated"
+    fi
+    
+    # Disable transparent hugepages to optimize database workloads
+    echo "never" | sudo tee /sys/kernel/mm/transparent_hugepage/enabled >/dev/null
+    echo "never" | sudo tee /sys/kernel/mm/transparent_hugepage/defrag >/dev/null
+    
+    echo "Enterprise kernel tuning applied"
+}
+
+# Optimize enterprise services for performance and stability
+enterprise_services_tuning() {
+    echo "=== Optimizing Enterprise Services ==="
+    
+    # Create a systemd slice for resource management
+    sudo mkdir -p /etc/systemd/system/enterprise.slice.d
+    sudo bash -c 'cat > /etc/systemd/system/enterprise.slice <<EOF
+[Unit]
+Description=Enterprise Services Slice
+Before=slices.target
+
+[Slice]
+CPUQuota=80%                            # Limit CPU usage for enterprise services
+MemoryHigh=90%                          # Set high memory threshold
+MemoryMax=95%                           # Set max memory usage
+IOWeight=100                            # Prioritize I/O operations
+BlockIOWeight=100                       # Prioritize block I/O operations
+EOF'
+    
+    # Enable essential enterprise services
+    local services=("irqbalance" "tuned" "rsyslog" "auditd" "chronyd")
+    for service in "${services[@]}"; do
+        if systemctl list-unit-files | grep -q "^${service}\."; then
+            sudo systemctl enable --now "$service"
+        fi
+    done
+    
+    # Disable unnecessary services to reduce resource usage
+    local disable_services=("bluetooth" "cups" "avahi-daemon" "ModemManager")
+    for service in "${disable_services[@]}"; do
+        if systemctl list-unit-files | grep -q "^${service}\."; then
+            sudo systemctl disable --now "$service" || true
+        fi
+    done
+    
+    # Configure journald for enterprise logging
+    sudo mkdir -p /etc/systemd/journald.conf.d
+    sudo bash -c 'cat > /etc/systemd/journald.conf.d/99-enterprise.conf <<EOF
+[Journal]
+Storage=persistent                       # Enable persistent logging
+SystemMaxUse=1G                         # Limit system journal size
+SystemMaxFileSize=100M                  # Limit individual journal file size
+SystemMaxFiles=10                       # Limit number of journal files
+RuntimeMaxUse=200M                      # Limit runtime journal size
+RuntimeMaxFileSize=50M                  # Limit runtime journal file size
+RuntimeMaxFiles=5                       # Limit runtime journal files
+ForwardToSyslog=yes                     # Forward logs to syslog
+EOF'
+    
+    # Restart journald to apply changes
+    sudo systemctl restart systemd-journald
+    echo "Enterprise services optimization complete"
+}
+
+# Apply enterprise-grade security hardening
+enterprise_security_hardening() {
+    echo "=== Applying Enterprise Security Hardening ==="
+    
+    # Harden SSH configuration
+    sudo bash -c 'cat >> /etc/ssh/sshd_config <<EOF
+# Enterprise SSH hardening
+Protocol 2                              # Enforce SSH protocol version 2
+LogLevel VERBOSE                        # Enable verbose logging
+X11Forwarding no                        # Disable X11 forwarding
+MaxAuthTries 3                          # Limit authentication attempts
+MaxSessions 3                           # Limit concurrent sessions
+ClientAliveInterval 300                 # Set client keep-alive interval
+ClientAliveCountMax 0                   # Disable client keep-alive
+PermitRootLogin no                      # Disable root login
+AllowAgentForwarding no                 # Disable agent forwarding
+AllowTcpForwarding no                   # Disable TCP forwarding
+PermitEmptyPasswords no                 # Disallow empty passwords
+EOF'
+    
+    # Restart SSH service to apply changes
+    sudo systemctl restart sshd
+    
+    # Configure firewall rules
+    if command -v ufw >/dev/null; then
+        sudo ufw default deny incoming       # Deny all incoming connections by default
+        sudo ufw default allow outgoing      # Allow all outgoing connections
+        sudo ufw allow 22/tcp                # Allow SSH
+        sudo ufw --force enable              # Enable firewall
+    elif command -v firewall-cmd >/dev/null; then
+        sudo firewall-cmd --permanent --remove-service={dhcpv6-client,cockpit}  # Remove unnecessary services
+        sudo firewall-cmd --permanent --add-service=ssh                         # Allow SSH
+        sudo firewall-cmd --reload                                              # Apply firewall changes
+    fi
+    
+    # Set secure file permissions
+    sudo chmod 700 /root                     # Restrict root directory access
+    sudo chmod 600 /etc/ssh/*_key           # Restrict SSH private key access
+    sudo chmod 644 /etc/ssh/*.pub           # Set public key permissions
+    
+    # Apply additional kernel security parameters
+    sudo bash -c 'cat >> /etc/sysctl.d/99-security.conf <<EOF
+# Network security hardening
+net.ipv4.conf.all.rp_filter=1           # Enable reverse path filtering
+net.ipv4.conf.default.rp_filter=1       # Enable default reverse path filtering
+net.ipv4.conf.all.accept_redirects=0    # Disable ICMP redirects
+net.ipv4.conf.default.accept_redirects=0# Disable default ICMP redirects
+net.ipv4.conf.all.send_redirects=0      # Disable sending ICMP redirects
+net.ipv4.conf.default.send_redirects=0  # Disable default sending ICMP redirects
+net.ipv4.icmp_echo_ignore_broadcasts=1  # Ignore ICMP broadcast requests
+net.ipv4.icmp_ignore_bogus_error_responses=1 # Ignore bogus ICMP errors
+net.ipv4.tcp_syncookies=1               # Enable TCP SYN cookies
+kernel.kptr_restrict=2                  # Restrict kernel pointer access
+kernel.dmesg_restrict=1                 # Restrict dmesg access
+kernel.yama.ptrace_scope=2              # Restrict ptrace scope
+EOF'
+    
+    # Apply security kernel parameters
+    sudo sysctl -p /etc/sysctl.d/99-security.conf
+    
+    # Install and configure fail2ban for intrusion prevention
+    if ! command -v fail2ban-client >/dev/null; then
+        case "$DISTRO" in
+            ubuntu|debian)
+                sudo apt install -y fail2ban
+                ;;
+            centos|rhel|fedora)
+                sudo yum install -y fail2ban
+                ;;
+            opensuse*|sles)
+                sudo zypper install -y fail2ban
+                ;;
+        esac
+    fi
+    
+    # Enable and start fail2ban
+    sudo systemctl enable --now fail2ban
+    
+    echo "Enterprise security hardening applied"
+}
+
+# Optimize Ubuntu desktop environment
+optimize_ubuntu_desktop() {
+    echo "=== Optimizing Ubuntu Desktop ==="
+    
+    # Disable snapd services to reduce resource usage
+    sudo systemctl disable snapd.service || true
+    sudo systemctl disable snapd.seeded.service || true
+    sudo systemctl disable snapd.socket || true
+    sudo systemctl disable snapd.apparmor.service || true
+    
+    # Install performance tuning tools
+    sudo apt install -y tuned powertop preload
+    
+    # Enable preload for faster application loading
+    sudo systemctl enable --now preload
+    
+    # Enable tuned for dynamic performance tuning
+    sudo systemctl enable --now tuned
+    sudo tuned-adm profile balanced
+    
+    # Automatically tune power settings
+    sudo powertop --auto-tune
+    
+    # Optimize GNOME desktop settings
+    if [ -x "$(command -v gsettings)" ]; then
+        gsettings set org.gnome.desktop.interface enable-animations false         # Disable animations
+        gsettings set org.gnome.desktop.background show-desktop-icons false      # Hide desktop icons
+        gsettings set org.gnome.settings-daemon.plugins.power sleep-inactive-ac-timeout 1800  # Set sleep timeout
+    fi
+    
+    # Configure kernel parameters for desktop
+    sudo bash -c 'cat > /etc/sysctl.d/99-ubuntu-desktop.conf <<EOF
+vm.swappiness=10                        # Reduce swap usage
+vm.dirty_ratio=20                       # Increase dirty memory ratio
+vm.dirty_background_ratio=10            # Increase background flush ratio
+EOF'
+    
+    # Apply desktop kernel parameters
+    sudo sysctl -p /etc/sysctl.d/99-ubuntu-desktop.conf
+    echo "Ubuntu desktop optimization complete"
+}
+
+# Optimize Debian desktop environment
+optimize_debian_desktop() {
+    echo "=== Optimizing Debian Desktop ==="
+    
+    # Install preload for faster application loading
+    sudo apt install -y preload
+    
+    # Enable preload
+    sudo systemctl enable --now preload
+    
+    # Configure kernel parameters for desktop
+    sudo bash -c 'cat > /etc/sysctl.d/99-debian-desktop.conf <<EOF
+vm.swappiness=10                        # Reduce swap usage
+vm.dirty_ratio=20                       # Increase dirty memory ratio
+vm.dirty_background_ratio=10            # Increase background flush ratio
+EOF'
+    
+    # Apply desktop kernel parameters
+    sudo sysctl -p /etc/sysctl.d/99-debian-desktop.conf
+    
+    # Disable unnecessary services
+    sudo systemctl disable rsync.service || true
+    sudo systemctl disable exim4.service || true
+    
+    echo "Debian desktop optimization complete"
+}
+
+# Optimize Fedora desktop environment
+optimize_fedora_desktop() {
+    echo "=== Optimizing Fedora Desktop ==="
+    
+    # Enable tuned for dynamic performance tuning
+    sudo systemctl enable --now tuned
+    sudo tuned-adm profile balanced
+    
+    # Disable unnecessary ABRT services
+    sudo systemctl disable abrtd.service || true
+    sudo systemctl disable abrt-journal-core.service || true
+    sudo systemctl disable abrt-oops.service || true
+    
+    # Configure kernel parameters for desktop
+    sudo bash -c 'cat > /etc/sysctl.d/99-fedora-desktop.conf <<EOF
+vm.swappiness=10                        # Reduce swap usage
+vm.dirty_ratio=20                       # Increase dirty memory ratio
+vm.dirty_background_ratio=10            # Increase background flush ratio
+EOF'
+    
+    # Apply desktop kernel parameters
+    sudo sysctl -p /etc/sysctl.d/99-fedora-desktop.conf
+    
+    # Optimize GNOME desktop settings
+    if [ -x "$(command -v gsettings)" ]; then
+        gsettings set org.gnome.desktop.interface enable-animations false         # Disable animations
+        gsettings set org.gnome.settings-daemon.plugins.power sleep-inactive-ac-timeout 1800  # Set sleep timeout
+    fi
+    
+    echo "Fedora desktop optimization complete"
+}
+
+# Optimize CentOS desktop environment
+optimize_centos_desktop() {
+    echo "=== Optimizing CentOS Desktop ==="
+    
+    # Enable tuned for dynamic performance tuning
+    sudo systemctl enable --now tuned
+    sudo tuned-adm profile balanced
+    
+    # Configure kernel parameters for desktop
+    sudo bash -c 'cat > /etc/sysctl.d/99-centos-desktop.conf <<EOF
+vm.swappiness=10                        # Reduce swap usage
+vm.dirty_ratio=20                       # Increase dirty memory ratio
+vm.dirty_background_ratio=10            # Increase background flush ratio
+EOF'
+    
+    # Apply desktop kernel parameters
+    sudo sysctl -p /etc/sysctl.d/99-centos-desktop.conf
+    
+    echo "CentOS desktop optimization complete"
+}
+
+# Optimize openSUSE desktop environment
+optimize_opensuse_desktop() {
+    echo "=== Optimizing openSUSE Desktop ==="
+    
+    # Enable fstrim for SSD optimization
+    sudo systemctl enable --now fstrim.timer
+    
+    # Disable unnecessary services
+    sudo systemctl disable ModemManager.service || true
+    sudo systemctl disable wpa_supplicant.service || true
+    
+    # Configure kernel parameters for desktop
+    sudo bash -c 'cat > /etc/sysctl.d/99-opensuse-desktop.conf <<EOF
+vm.swappiness=10                        # Reduce swap usage
+vm.dirty_ratio=20                       # Increase dirty memory ratio
+vm.dirty_background_ratio=10            # Increase background flush ratio
+EOF'
+    
+    # Apply desktop kernel parameters
+    sudo sysctl -p /etc/sysctl.d/99-opensuse-desktop.conf
+    
+    # Optimize KDE desktop settings
+    if [ -x "$(command -v kwriteconfig5)" ]; then
+        kwriteconfig5 --file kwinrc --group Compositing --key Enabled false  # Disable KDE compositing
+    fi
+    
+    echo "openSUSE desktop optimization complete"
+}
+
+# Main execution logic
+main() {
+    # Parse command line arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --desktop)
+                shift
+                case "$1" in
+                    --storage)
+                        detect_distro
+                        update_system
+                        install_tools
+                        optimize_systemd
+                        tune_desktop_storage
+                        enable_tuned
+                        shift
+                        ;;
+                    --mediaserver)
+                        detect_distro
+                        update_system
+                        install_tools
+                        optimize_systemd
+                        tune_desktop_media
+                        enable_tuned
+                        shift
+                        ;;
+                    *)
+                        echo "Invalid desktop option: $1"
+                        show_help
+                        exit 1
+                        ;;
+                esac
+                ;;
+            --server)
+                shift
+                case "$1" in
+                    --storageserver)
+                        detect_distro
+                        update_system
+                        install_tools
+                        optimize_systemd
+                        tune_server_storage
+                        enable_tuned
+                        shift
+                        ;;
+                    --mediaserver)
+                        detect_distro
+                        update_system
+                        install_tools
+                        optimize_systemd
+                        tune_server_media
+                        enable_tuned
+                        shift
+                        ;;
+                    --idsips)
+                        detect_distro
+                        update_system
+                        install_tools
+                        optimize_systemd
+                        tune_server_ids_ips
+                        enable_tuned
+                        shift
+                        ;;
+                    *)
+                        echo "Invalid server option: $1"
+                        show_help
+                        exit 1
+                        ;;
+                esac
+                ;;
+            --embedded)
+                detect_distro
+                update_system
+                install_tools
+                optimize_systemd
+                tune_embedded
+                shift
+                ;;
+            --ubuntu-desktop)
+                detect_distro
+                update_system
+                install_tools
+                optimize_systemd
+                optimize_ubuntu_desktop
+                enable_tuned
+                shift
+                ;;
+            --debian-desktop)
+                detect_distro
+                update_system
+                install_tools
+                optimize_systemd
+                optimize_debian_desktop
+                enable_tuned
+                shift
+                ;;
+            --fedora-desktop)
+                detect_distro
+                update_system
+                install_tools
+                optimize_systemd
+                optimize_fedora_desktop
+                enable_tuned
+                shift
+                ;;
+            --centos-desktop)
+                detect_distro
+                update_system
+                install_tools
+                optimize_systemd
+                optimize_centos_desktop
+                enable_tuned
+                shift
+                ;;
+            --opensuse-desktop)
+                detect_distro
+                update_system
+                install_tools
+                optimize_systemd
+                optimize_opensuse_desktop
+                enable_tuned
+                shift
+                ;;
+            --enterprise-kernel)
+                enterprise_kernel_tuning
+                shift
+                ;;
+            --enterprise-services)
+                enterprise_services_tuning
+                shift
+                ;;
+            --enterprise-security)
+                enterprise_security_hardening
+                shift
+                ;;
+            --help)
+                show_help
+                exit 0
+                ;;
+            *)
+                echo "Unknown option: $1"
+                show_help
+                exit 1
+                ;;
+        esac
+    done
+
+    # Display help if no arguments are provided
+    if [[ $# -eq 0 ]]; then
+        show_help
+        exit 0
+    fi
+
+    echo "=== Enterprise Optimization complete! ==="
+    echo "Recommendations:"
+    echo "- Reboot your system to apply all changes"
+    echo "- Monitor system performance with: htop, iotop, dstat"
+    echo "- Check security status with: lynis, auditd"
+    echo "- Review logs: journalctl -xe"
+}
+
+# Execute the main function with provided arguments
+main "$@"
