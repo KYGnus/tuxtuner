@@ -1,282 +1,1402 @@
 #!/usr/bin/env bash
-# ========================================
-# TuxTuner - Enterprise Linux Optimization Tool
-# Version: 2.1
-# Koosha Yeganeh - 2025
-# ========================================
+# =============================================================================
+# TuxTuner
+# Enterprise Linux Optimization Tool
+#
+# Version: 2.3
+# Author : Koosha Yeganeh
+# Company: KYGnus / شرکت متن‌باز فناوران آریا
+#
+# Interfaces:
+#   1. Remote terminal TUI
+#   2. Pure CLI switches
+#
+# Designed for:
+#   SSH
+#   TTY
+#   Console
+#   Servers
+#   Desktop Linux
+#   Old hardware
+#   Remote administration
+#
+# No X11 / Wayland / GTK / Qt dependency.
+# =============================================================================
 
-set -euo pipefail
+set -uo pipefail
 
-# Configuration
-LOG_FILE="/tmp/tuxtuner.log"
-TMP_DIR="/tmp/tuxtuner_$(date +%Y%m%d_%H%M%S)"
-DIALOG_BACKTITLE="TuxTuner v1.0 - Enterprise Linux Optimization"
+# =============================================================================
+# GLOBAL CONFIGURATION
+# =============================================================================
+
+readonly APP_NAME="TuxTuner"
+readonly VERSION="2.3"
+
+readonly STATE_DIR="/var/lib/tuxtuner"
+readonly BACKUP_DIR="${STATE_DIR}/backups"
+readonly LOG_DIR="/var/log/tuxtuner"
+readonly LOG_FILE="${LOG_DIR}/tuxtuner.log"
+
+readonly TUI_TITLE="TuxTuner v${VERSION} - Enterprise Linux Optimization"
+
+TMP_DIR="/tmp/tuxtuner_$(date +%Y%m%d_%H%M%S)_$$"
+
 DISTRO=""
 DISTRO_VERSION=""
+DISTRO_FAMILY=""
+DISTRO_PRETTY=""
 
-# Colors for logging
+INTERACTIVE=1
+DRY_RUN=0
+ASSUME_YES=0
+BACKUP_ENABLED=1
+
+# =============================================================================
+# ACTION FLAGS
+# =============================================================================
+
+ACTION_INFO=0
+ACTION_STATUS=0
+ACTION_LIST=0
+
+PROFILE_DESKTOP=0
+PROFILE_SERVER=0
+PROFILE_EMBEDDED=0
+
+OPT_STORAGE=0
+OPT_MEDIA=0
+OPT_STORAGE_SERVER=0
+OPT_IDSIPS=0
+
+ENTERPRISE_KERNEL=0
+ENTERPRISE_SERVICES=0
+ENTERPRISE_SECURITY=0
+
+# =============================================================================
+# COLORS
+# =============================================================================
+
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
+MAGENTA='\033[0;35m'
 CYAN='\033[0;36m'
-NC='\033[0m' # No Color
+WHITE='\033[1;37m'
+DIM='\033[2m'
+NC='\033[0m'
 
-# Initialize logging
-init_logging() {
-    mkdir -p "$(dirname "$LOG_FILE")"
-    touch "$LOG_FILE"
-    exec > >(tee -a "$LOG_FILE") 2>&1
-    echo -e "\n=== TuxTuner started at $(date) ===" >> "$LOG_FILE"
-    log_info "Logging initialized at $LOG_FILE"
+# =============================================================================
+# BASIC HELPERS
+# =============================================================================
+
+command_exists() {
+    command -v "$1" >/dev/null 2>&1
 }
 
-# Logging functions
+is_root() {
+    [[ "$(id -u)" -eq 0 ]]
+}
+
+pause_screen() {
+    printf "\nPress ENTER to continue..."
+    read -r
+}
+
+# =============================================================================
+# LOGGING
+# =============================================================================
+
+init_logging() {
+
+    if is_root; then
+
+        mkdir -p "$LOG_DIR" 2>/dev/null || true
+
+        if ! touch "$LOG_FILE" 2>/dev/null; then
+            LOG_DIR="/tmp"
+            LOG_FILE="/tmp/tuxtuner.log"
+        fi
+
+    else
+
+        LOG_DIR="/tmp"
+        LOG_FILE="/tmp/tuxtuner.log"
+
+    fi
+
+    touch "$LOG_FILE" 2>/dev/null || true
+
+    exec > >(tee -a "$LOG_FILE") 2>&1
+
+    echo
+    echo "============================================================"
+    echo "${APP_NAME} v${VERSION}"
+    echo "Started: $(date)"
+    echo "============================================================"
+}
+
 log_info() {
-    echo -e "${BLUE}[INFO]${NC} $1"
-    echo "[INFO] $(date '+%Y-%m-%d %H:%M:%S') - $1" >> "$LOG_FILE"
+    echo -e "${BLUE}[INFO]${NC} $*"
 }
 
 log_success() {
-    echo -e "${GREEN}[SUCCESS]${NC} $1"
-    echo "[SUCCESS] $(date '+%Y-%m-%d %H:%M:%S') - $1" >> "$LOG_FILE"
+    echo -e "${GREEN}[SUCCESS]${NC} $*"
 }
 
 log_warning() {
-    echo -e "${YELLOW}[WARNING]${NC} $1"
-    echo "[WARNING] $(date '+%Y-%m-%d %H:%M:%S') - $1" >> "$LOG_FILE"
+    echo -e "${YELLOW}[WARNING]${NC} $*"
 }
 
 log_error() {
-    echo -e "${RED}[ERROR]${NC} $1"
-    echo "[ERROR] $(date '+%Y-%m-%d %H:%M:%S') - $1" >> "$LOG_FILE"
+    echo -e "${RED}[ERROR]${NC} $*"
 }
 
-# Initialize temporary directory
-init_temp_dir() {
-    mkdir -p "$TMP_DIR"
-    trap 'cleanup' EXIT INT TERM
-    log_info "Temporary directory created at $TMP_DIR"
-}
+log_action() {
 
-# Cleanup function
-cleanup() {
-    if [ -d "$TMP_DIR" ]; then
-        rm -rf "$TMP_DIR"
-        log_info "Temporary files cleaned up"
+    if [[ "$DRY_RUN" -eq 1 ]]; then
+        echo -e "${CYAN}[DRY-RUN]${NC} $*"
+    else
+        echo -e "${MAGENTA}[ACTION]${NC} $*"
     fi
 }
 
-# Check root privileges
-check_root() {
-    if [ "$(id -u)" -ne 0 ]; then
-        log_error "This script must be run as root. Use sudo."
+# =============================================================================
+# CLEANUP
+# =============================================================================
+
+cleanup() {
+
+    local rc=$?
+
+    if [[ -n "${TMP_DIR:-}" && -d "$TMP_DIR" ]]; then
+        rm -rf "$TMP_DIR" 2>/dev/null || true
+    fi
+
+    trap - EXIT
+
+    exit "$rc"
+}
+
+trap cleanup EXIT
+
+init_temp() {
+
+    mkdir -p "$TMP_DIR" || {
+        log_error "Unable to create temporary directory."
+        exit 1
+    }
+
+    log_info "Temporary directory: $TMP_DIR"
+}
+
+# =============================================================================
+# ROOT
+# =============================================================================
+
+require_root() {
+
+    if ! is_root; then
+
+        log_error "TuxTuner requires root privileges."
+
+        echo
+        echo "Run:"
+        echo
+        echo "  sudo $0 $*"
+        echo
+
         exit 1
     fi
-    log_info "Running with root privileges"
 }
 
-# Detect the Linux distribution and version
+# =============================================================================
+# DISTRIBUTION DETECTION
+# =============================================================================
+
 detect_distro() {
-    if [ -f /etc/os-release ]; then
+
+    DISTRO=""
+    DISTRO_VERSION=""
+    DISTRO_FAMILY=""
+    DISTRO_PRETTY=""
+
+    if [[ -f /etc/os-release ]]; then
+
+        # shellcheck disable=SC1091
         . /etc/os-release
-        DISTRO=$ID
-        DISTRO_VERSION=$VERSION_ID
-    elif [ -f /etc/redhat-release ]; then
-        DISTRO="rhel"
-        DISTRO_VERSION=$(grep -oE '[0-9]+\.[0-9]+' /etc/redhat-release)
-    elif [ -f /etc/debian_version ]; then
+
+        DISTRO="${ID:-unknown}"
+        DISTRO_VERSION="${VERSION_ID:-unknown}"
+        DISTRO_PRETTY="${PRETTY_NAME:-$DISTRO}"
+
+    elif [[ -f /etc/debian_version ]]; then
+
         DISTRO="debian"
-        DISTRO_VERSION=$(cat /etc/debian_version)
+        DISTRO_VERSION="$(cat /etc/debian_version)"
+        DISTRO_PRETTY="Debian ${DISTRO_VERSION}"
+
+    elif [[ -f /etc/redhat-release ]]; then
+
+        DISTRO="rhel"
+        DISTRO_VERSION="$(
+            grep -oE '[0-9]+(\.[0-9]+)?' /etc/redhat-release |
+            head -n1
+        )"
+
+        DISTRO_PRETTY="$(cat /etc/redhat-release)"
+
     else
-        DISTRO=$(uname -s | tr '[:upper:]' '[:lower:]')
+
+        DISTRO="$(uname -s | tr '[:upper:]' '[:lower:]')"
+        DISTRO_VERSION="$(uname -r)"
+        DISTRO_PRETTY="${DISTRO} ${DISTRO_VERSION}"
+
     fi
 
-    # Additional detection for specific distributions
-    case $DISTRO in
-        ubuntu|debian|fedora|centos|rhel|opensuse|sles|arch|alpine)
+    case "$DISTRO" in
+
+        debian|ubuntu|linuxmint|pop|elementary)
+            DISTRO_FAMILY="debian"
             ;;
+
+        opensuse|opensuse-leap|opensuse-tumbleweed|sles|sled)
+            DISTRO_FAMILY="suse"
+            ;;
+
+        fedora|rhel|centos|rocky|almalinux|ol)
+            DISTRO_FAMILY="redhat"
+            ;;
+
+        arch|manjaro|endeavouros)
+            DISTRO_FAMILY="arch"
+            ;;
+
+        alpine)
+            DISTRO_FAMILY="alpine"
+            ;;
+
         *)
-            if [ -f /etc/lsb-release ]; then
-                . /etc/lsb-release
-                DISTRO=$DISTRIB_ID
-                DISTRO_VERSION=$DISTRIB_RELEASE
-            fi
+            DISTRO_FAMILY="unknown"
             ;;
+
     esac
 
-    log_info "Detected distribution: $DISTRO $DISTRO_VERSION"
+    log_info "Distribution : $DISTRO_PRETTY"
+    log_info "Family       : $DISTRO_FAMILY"
 }
 
-# Check if dialog is installed
-check_dialog() {
-    if ! command -v dialog >/dev/null 2>&1; then
-        log_warning "Dialog not found. Attempting to install..."
-        
-        case $DISTRO in
-            ubuntu|debian)
-                apt-get update && apt-get install -y dialog
-                ;;
-            centos|rhel|fedora)
-                yum install -y dialog
-                ;;
-            opensuse*|sles)
-                zypper install -y dialog
-                ;;
-            arch)
-                pacman -Sy --noconfirm dialog
-                ;;
-            alpine)
-                apk add dialog
-                ;;
-            *)
-                log_error "Unable to install dialog automatically for $DISTRO"
-                return 1
-                ;;
-        esac
-        
-        if ! command -v dialog >/dev/null 2>&1; then
-            log_error "Dialog installation failed. Falling back to CLI mode."
-            return 1
-        fi
+# =============================================================================
+# BACKUP
+# =============================================================================
+
+backup_file() {
+
+    local file="$1"
+
+    [[ "$BACKUP_ENABLED" -eq 1 ]] || return 0
+    [[ -e "$file" ]] || return 0
+
+    local timestamp
+    timestamp="$(date +%Y%m%d_%H%M%S)"
+
+    local destination
+    destination="${BACKUP_DIR}/${timestamp}"
+
+    mkdir -p "$destination"
+
+    local safe_name
+    safe_name="${file#/}"
+    safe_name="${safe_name//\//_}"
+
+    cp -a "$file" "${destination}/${safe_name}" 2>/dev/null || true
+
+    log_info "Backup: ${destination}/${safe_name}"
+}
+
+# =============================================================================
+# COMMAND EXECUTION
+# =============================================================================
+
+run_cmd() {
+
+    log_action "$*"
+
+    if [[ "$DRY_RUN" -eq 1 ]]; then
+        return 0
     fi
+
+    "$@"
+}
+
+# =============================================================================
+# SYSCTL
+# =============================================================================
+
+set_sysctl() {
+
+    local key="$1"
+    local value="$2"
+
+    local config="/etc/sysctl.d/99-tuxtuner.conf"
+
+    log_action "sysctl: ${key}=${value}"
+
+    if [[ "$DRY_RUN" -eq 1 ]]; then
+        return 0
+    fi
+
+    mkdir -p /etc/sysctl.d
+
+    touch "$config"
+
+    backup_file "$config"
+
+    if grep -Eq "^[[:space:]]*${key}[[:space:]]*=" "$config"; then
+
+        sed -i -E \
+            "s|^[[:space:]]*${key}[[:space:]]*=.*|${key} = ${value}|" \
+            "$config"
+
+    else
+
+        echo "${key} = ${value}" >> "$config"
+
+    fi
+
+    if command_exists sysctl; then
+        sysctl -w "${key}=${value}" >/dev/null 2>&1 || true
+    fi
+}
+
+reload_sysctl() {
+
+    [[ "$DRY_RUN" -eq 1 ]] && return 0
+
+    if command_exists sysctl; then
+        sysctl --system >/dev/null 2>&1 || \
+            log_warning "Some sysctl settings could not be reloaded."
+    fi
+}
+
+# =============================================================================
+# SYSTEM INFORMATION
+# =============================================================================
+
+show_system_info() {
+
+    echo
+    echo "============================================================"
+    echo " TuxTuner System Information"
+    echo "============================================================"
+
+    echo
+    echo "TuxTuner"
+    echo "  Version       : ${VERSION}"
+
+    echo
+    echo "Operating System"
+    echo "  Distribution  : ${DISTRO_PRETTY}"
+    echo "  ID            : ${DISTRO}"
+    echo "  Version       : ${DISTRO_VERSION}"
+    echo "  Family        : ${DISTRO_FAMILY}"
+
+    echo
+    echo "Kernel"
+    echo "  Kernel        : $(uname -r)"
+    echo "  Architecture  : $(uname -m)"
+    echo "  Hostname      : $(hostname)"
+
+    if command_exists uptime; then
+        echo "  Uptime        : $(uptime -p 2>/dev/null || uptime)"
+    fi
+
+    echo
+    echo "CPU"
+
+    if [[ -r /proc/cpuinfo ]]; then
+        grep -m1 "model name" /proc/cpuinfo |
+            sed 's/^/  /'
+    fi
+
+    echo "  CPU cores     : $(nproc 2>/dev/null || echo unknown)"
+
+    echo
+    echo "Memory"
+
+    if command_exists free; then
+        free -h
+    fi
+
+    echo
+    echo "Storage"
+
+    if command_exists lsblk; then
+        lsblk \
+            -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINTS \
+            2>/dev/null || true
+    fi
+
+    echo
+    echo "Network"
+
+    if command_exists ip; then
+        ip -brief address 2>/dev/null || true
+    fi
+
+    echo
+}
+
+# =============================================================================
+# STATUS
+# =============================================================================
+
+show_status() {
+
+    echo
+    echo "============================================================"
+    echo " TuxTuner Status"
+    echo "============================================================"
+
+    echo
+    echo "Version       : ${VERSION}"
+    echo "Distribution  : ${DISTRO_PRETTY}"
+    echo "Family        : ${DISTRO_FAMILY}"
+    echo "Kernel        : $(uname -r)"
+    echo "Architecture  : $(uname -m)"
+    echo "Dry-run       : ${DRY_RUN}"
+    echo "Backup        : ${BACKUP_ENABLED}"
+    echo "Log           : ${LOG_FILE}"
+    echo "State         : ${STATE_DIR}"
+    echo "Backups       : ${BACKUP_DIR}"
+
+    echo
+
+    if command_exists systemctl; then
+        echo "Service manager: systemd"
+    elif command_exists rc-service; then
+        echo "Service manager: OpenRC"
+    elif command_exists service; then
+        echo "Service manager: SysV/service"
+    else
+        echo "Service manager: unknown"
+    fi
+
+    echo
+}
+
+# =============================================================================
+# DESKTOP PROFILE
+# =============================================================================
+
+opt_desktop() {
+
+    echo
+    log_info "Applying desktop optimization..."
+
+    set_sysctl "vm.swappiness" "10"
+    set_sysctl "vm.vfs_cache_pressure" "50"
+
+    reload_sysctl
+
+    log_success "Desktop optimization completed."
+}
+
+# =============================================================================
+# SERVER PROFILE
+# =============================================================================
+
+opt_server() {
+
+    echo
+    log_info "Applying server optimization..."
+
+    set_sysctl "vm.swappiness" "10"
+    set_sysctl "vm.vfs_cache_pressure" "50"
+
+    set_sysctl "net.core.somaxconn" "1024"
+    set_sysctl "net.ipv4.tcp_max_syn_backlog" "4096"
+
+    reload_sysctl
+
+    log_success "Server optimization completed."
+}
+
+# =============================================================================
+# STORAGE
+# =============================================================================
+
+opt_storage() {
+
+    echo
+    log_info "Applying storage optimization..."
+
+    set_sysctl "vm.dirty_background_ratio" "5"
+    set_sysctl "vm.dirty_ratio" "15"
+
+    reload_sysctl
+
+    if command_exists fstrim; then
+
+        log_action "Running filesystem TRIM."
+
+        if [[ "$DRY_RUN" -eq 0 ]]; then
+            fstrim -av || \
+                log_warning "fstrim returned an error."
+        fi
+
+    else
+
+        log_warning "fstrim is not installed."
+
+    fi
+
+    log_success "Storage optimization completed."
+}
+
+# =============================================================================
+# MEDIA SERVER
+# =============================================================================
+
+opt_media() {
+
+    echo
+    log_info "Applying media-server optimization..."
+
+    set_sysctl "net.core.rmem_max" "16777216"
+    set_sysctl "net.core.wmem_max" "16777216"
+
+    reload_sysctl
+
+    log_success "Media-server optimization completed."
+}
+
+# =============================================================================
+# STORAGE SERVER
+# =============================================================================
+
+opt_storage_server() {
+
+    echo
+    log_info "Applying storage-server optimization..."
+
+    set_sysctl "vm.dirty_background_ratio" "5"
+    set_sysctl "vm.dirty_ratio" "10"
+    set_sysctl "vm.swappiness" "10"
+
+    reload_sysctl
+
+    if command_exists fstrim; then
+
+        if [[ "$DRY_RUN" -eq 0 ]]; then
+            fstrim -av || true
+        else
+            log_action "fstrim -av"
+        fi
+
+    fi
+
+    log_success "Storage-server optimization completed."
+}
+
+# =============================================================================
+# IDS / IPS
+# =============================================================================
+
+opt_idsips() {
+
+    echo
+    log_info "Applying IDS/IPS network tuning..."
+
+    set_sysctl "net.core.somaxconn" "4096"
+    set_sysctl "net.core.netdev_max_backlog" "5000"
+    set_sysctl "net.ipv4.tcp_max_syn_backlog" "4096"
+
+    reload_sysctl
+
+    log_success "IDS/IPS optimization completed."
+}
+
+# =============================================================================
+# EMBEDDED
+# =============================================================================
+
+opt_embedded() {
+
+    echo
+    log_info "Applying embedded-system optimization..."
+
+    set_sysctl "vm.swappiness" "5"
+    set_sysctl "vm.vfs_cache_pressure" "75"
+
+    reload_sysctl
+
+    log_success "Embedded optimization completed."
+}
+
+# =============================================================================
+# ENTERPRISE KERNEL
+# =============================================================================
+
+enterprise_kernel() {
+
+    echo
+    log_info "Enterprise kernel tuning..."
+
+    set_sysctl "vm.swappiness" "10"
+    set_sysctl "vm.vfs_cache_pressure" "50"
+
+    set_sysctl "net.core.somaxconn" "1024"
+    set_sysctl "net.ipv4.tcp_max_syn_backlog" "4096"
+
+    reload_sysctl
+
+    log_success "Enterprise kernel tuning completed."
+}
+
+# =============================================================================
+# ENTERPRISE SERVICES
+# =============================================================================
+
+enterprise_services() {
+
+    echo
+    log_info "Enterprise service analysis..."
+
+    if command_exists systemctl; then
+
+        systemctl list-unit-files \
+            --type=service \
+            --state=enabled \
+            --no-pager \
+            2>/dev/null |
+            head -n 50
+
+    elif command_exists rc-status; then
+
+        rc-status 2>/dev/null || true
+
+    elif command_exists service; then
+
+        service --status-all 2>/dev/null || true
+
+    else
+
+        log_warning "No recognized service manager found."
+
+    fi
+
+    log_success "Service analysis completed."
+}
+
+# =============================================================================
+# ENTERPRISE SECURITY
+# =============================================================================
+
+enterprise_security() {
+
+    echo
+    log_info "Enterprise security hardening..."
+
+    set_sysctl "net.ipv4.conf.all.rp_filter" "1"
+    set_sysctl "net.ipv4.conf.default.rp_filter" "1"
+
+    set_sysctl "net.ipv4.icmp_echo_ignore_broadcasts" "1"
+
+    set_sysctl "net.ipv4.conf.all.accept_source_route" "0"
+    set_sysctl "net.ipv4.conf.default.accept_source_route" "0"
+
+    set_sysctl "net.ipv4.conf.all.accept_redirects" "0"
+    set_sysctl "net.ipv4.conf.default.accept_redirects" "0"
+
+    set_sysctl "net.ipv4.conf.all.send_redirects" "0"
+
+    reload_sysctl
+
+    log_success "Enterprise security hardening completed."
+}
+
+# =============================================================================
+# ENTERPRISE ALL
+# =============================================================================
+
+enterprise_all() {
+
+    echo
+    log_info "Running complete enterprise optimization."
+
+    enterprise_kernel
+    enterprise_services
+    enterprise_security
+
+    log_success "Enterprise optimization completed."
+}
+
+# =============================================================================
+# ACTION LIST
+# =============================================================================
+
+list_actions() {
+
+    cat <<EOF
+
+Available TuxTuner switches
+===========================
+
+Profiles:
+  --desktop
+  --server
+  --embedded
+
+Optimization:
+  --storage
+  --mediaserver
+  --storageserver
+  --idsips
+
+Enterprise:
+  --enterprise-kernel
+  --enterprise-services
+  --enterprise-security
+  --enterprise-all
+
+Information:
+  --info
+  --status
+  --list
+  --version
+  --help
+
+Execution:
+  --dry-run
+  --yes
+  --no-backup
+
+EOF
+}
+
+# =============================================================================
+# CLI EXECUTION
+# =============================================================================
+
+run_cli() {
+
+    local executed=0
+
+    if [[ "$ACTION_INFO" -eq 1 ]]; then
+        show_system_info
+        executed=1
+    fi
+
+    if [[ "$ACTION_STATUS" -eq 1 ]]; then
+        show_status
+        executed=1
+    fi
+
+    if [[ "$PROFILE_DESKTOP" -eq 1 ]]; then
+        opt_desktop
+        executed=1
+    fi
+
+    if [[ "$PROFILE_SERVER" -eq 1 ]]; then
+        opt_server
+        executed=1
+    fi
+
+    if [[ "$PROFILE_EMBEDDED" -eq 1 ]]; then
+        opt_embedded
+        executed=1
+    fi
+
+    if [[ "$OPT_STORAGE" -eq 1 ]]; then
+        opt_storage
+        executed=1
+    fi
+
+    if [[ "$OPT_MEDIA" -eq 1 ]]; then
+        opt_media
+        executed=1
+    fi
+
+    if [[ "$OPT_STORAGE_SERVER" -eq 1 ]]; then
+        opt_storage_server
+        executed=1
+    fi
+
+    if [[ "$OPT_IDSIPS" -eq 1 ]]; then
+        opt_idsips
+        executed=1
+    fi
+
+    if [[ "$ENTERPRISE_KERNEL" -eq 1 ]]; then
+        enterprise_kernel
+        executed=1
+    fi
+
+    if [[ "$ENTERPRISE_SERVICES" -eq 1 ]]; then
+        enterprise_services
+        executed=1
+    fi
+
+    if [[ "$ENTERPRISE_SECURITY" -eq 1 ]]; then
+        enterprise_security
+        executed=1
+    fi
+
+    if [[ "$ENTERPRISE_KERNEL" -eq 1 ]] &&
+       [[ "$ENTERPRISE_SERVICES" -eq 1 ]] &&
+       [[ "$ENTERPRISE_SECURITY" -eq 1 ]]; then
+
+        :
+    fi
+
+    if [[ "$executed" -eq 0 ]]; then
+        log_error "No action selected."
+        return 1
+    fi
+
     return 0
 }
 
-# Display main menu
-show_main_menu() {
-    while true; do
-        choice=$(dialog --backtitle "$DIALOG_BACKTITLE" \
-                        --title "Main Menu" \
-                        --menu "Choose an optimization profile:" 20 70 13 \
-                        1 "Desktop Optimization" \
-                        2 "Server Optimization" \
-                        3 "Enterprise Optimizations" \
-                        4 "Distribution-specific Desktop" \
-                        5 "Embedded Systems" \
-                        6 "View Logs" \
-                        7 "System Information" \
-                        8 "Help" \
-                        0 "Exit" \
-                        3>&1 1>&2 2>&3)
-        
-        case $choice in
-            1) show_desktop_menu ;;
-            2) show_server_menu ;;
-            3) show_enterprise_menu ;;
-            4) show_distro_menu ;;
-            5) run_optimization "--embedded" ;;
-            6) show_logs ;;
-            7) show_system_info ;;
-            8) show_help_menu ;;
-            0) break ;;
-            *) break ;;
-        esac
-    done
-}
+# =============================================================================
+# TUI
+# =============================================================================
 
-# [Rest of your menu functions (show_desktop_menu, show_server_menu, etc.)]
+TUI_BACKTITLE="$TUI_TITLE"
 
-# Display help information
-show_help() {
-    echo -e "${CYAN}TuxTuner - Enterprise Linux Optimization Tool${NC}"
-    echo -e "${BLUE}Version: 1.0${NC}"
-    echo ""
-    echo -e "${GREEN}Usage:${NC} $0 [OPTIONS] or run without arguments for interactive mode"
-    echo ""
-    echo -e "${YELLOW}Main Options:${NC}"
-    echo "  --desktop --storage       Optimize for desktop as storage server"
-    echo "  --desktop --mediaserver   Optimize for desktop as media server"
-    echo "  --server --storageserver  Optimize for server as storage server"
-    echo "  --server --mediaserver    Optimize for server as media server"
-    echo "  --server --idsips         Optimize for server as IDS/IPS"
-    echo "  --embedded                Optimize for embedded devices"
-    echo ""
-    echo -e "${YELLOW}Distribution-specific:${NC}"
-    echo "  --ubuntu-desktop          Optimize Ubuntu desktop"
-    echo "  --debian-desktop          Optimize Debian desktop"
-    echo "  --fedora-desktop          Optimize Fedora desktop"
-    echo "  --centos-desktop          Optimize CentOS desktop"
-    echo "  --opensuse-desktop        Optimize openSUSE desktop"
-    echo "  --arch-desktop            Optimize Arch Linux desktop"
-    echo ""
-    echo -e "${YELLOW}Enterprise Optimizations:${NC}"
-    echo "  --enterprise-kernel       Apply enterprise kernel tuning"
-    echo "  --enterprise-services     Optimize enterprise services"
-    echo "  --enterprise-security     Apply enterprise security hardening"
-    echo "  --enterprise-all          Apply all enterprise optimizations"
-    echo ""
-    echo -e "${YELLOW}Information:${NC}"
-    echo "  --help                    Show this help message"
-    echo "  --version                 Show version information"
-    echo "  --info                    Show system information"
-    echo ""
-    echo -e "${GREEN}Examples:${NC}"
-    echo "  $0 --ubuntu-desktop --enterprise-security"
-    echo "  $0 --server --storageserver --enterprise-kernel"
-    echo "  sudo $0 --enterprise-all"
-}
+tui_message() {
 
-# [All your original optimization functions (enterprise_kernel_tuning, etc.)]
+    local title="$1"
+    local message="$2"
 
-# Main execution logic
-main() {
-    # Parse command line arguments
-    while [[ $# -gt 0 ]]; do
-        case "$1" in
-            --help)
-                show_help
-                exit 0
-                ;;
-            --version)
-                echo "TuxTuner v2.1"
-                exit 0
-                ;;
-            --info)
-                detect_distro
-                show_system_info
-                exit 0
-                ;;
-            *)
-                # Process other arguments
-                shift
-                ;;
-        esac
-    done
+    if command_exists dialog; then
 
-    # Initialize
-    init_logging
-    init_temp_dir
-    detect_distro
+        dialog \
+            --backtitle "$TUI_BACKTITLE" \
+            --title "$title" \
+            --msgbox "$message" \
+            15 70
 
-    # Check if running in interactive mode
-    if [ $# -eq 0 ]; then
-        if check_dialog; then
-            show_main_menu
-        else
-            log_error "Unable to start interactive mode. Use command-line options instead."
-            show_help
-            exit 1
-        fi
     else
-        # Non-interactive mode
-        log_info "Running with arguments: $*"
-        check_root
-        
-        # Here you would process the command-line arguments
-        # and call the appropriate optimization functions
-        # For example:
-        # if [[ "$*" == *"--enterprise-kernel"* ]]; then
-        #     enterprise_kernel_tuning
-        # fi
+
+        echo
+        echo "=== ${title} ==="
+        echo
+        echo "$message"
+        echo
+        pause_screen
+
+    fi
+}
+
+tui_main_menu() {
+
+    while true; do
+
+        if ! command_exists dialog; then
+            tui_terminal_menu
+            return
+        fi
+
+        local choice
+
+        choice=$(
+            dialog \
+                --clear \
+                --backtitle "$TUI_BACKTITLE" \
+                --title "Main Menu" \
+                --menu "Select operation:" \
+                22 78 13 \
+                1 "Desktop Optimization" \
+                2 "Server Optimization" \
+                3 "Storage Optimization" \
+                4 "Enterprise Optimization" \
+                5 "Security Hardening" \
+                6 "Kernel Tuning" \
+                7 "Service Analysis" \
+                8 "Embedded Optimization" \
+                9 "System Information" \
+                10 "System Status" \
+                11 "View Log" \
+                12 "Available Switches" \
+                0 "Exit" \
+                3>&1 1>&2 2>&3
+        ) || break
+
+        case "$choice" in
+
+            1)
+                opt_desktop
+                tui_message "Desktop" "Desktop optimization completed."
+                ;;
+
+            2)
+                opt_server
+                tui_message "Server" "Server optimization completed."
+                ;;
+
+            3)
+                opt_storage
+                tui_message "Storage" "Storage optimization completed."
+                ;;
+
+            4)
+                enterprise_all
+                tui_message "Enterprise" "Enterprise optimization completed."
+                ;;
+
+            5)
+                enterprise_security
+                tui_message "Security" "Security hardening completed."
+                ;;
+
+            6)
+                enterprise_kernel
+                tui_message "Kernel" "Kernel tuning completed."
+                ;;
+
+            7)
+                enterprise_services
+                tui_message "Services" "Service analysis completed."
+                ;;
+
+            8)
+                opt_embedded
+                tui_message "Embedded" "Embedded optimization completed."
+                ;;
+
+            9)
+                show_system_info
+                pause_screen
+                ;;
+
+            10)
+                show_status
+                pause_screen
+                ;;
+
+            11)
+
+                if [[ -f "$LOG_FILE" ]]; then
+
+                    dialog \
+                        --backtitle "$TUI_BACKTITLE" \
+                        --title "TuxTuner Log" \
+                        --textbox "$LOG_FILE" \
+                        30 100
+
+                else
+
+                    tui_message "Log" "Log file does not exist."
+
+                fi
+
+                ;;
+
+            12)
+                tui_message "Switches" "$(list_actions)"
+                ;;
+
+            0)
+                break
+                ;;
+
+        esac
+
+    done
+}
+
+# =============================================================================
+# PURE TERMINAL TUI
+# =============================================================================
+
+tui_terminal_menu() {
+
+    while true; do
+
+        clear
+
+        echo
+        echo "============================================================"
+        echo " ${APP_NAME} v${VERSION}"
+        echo " Remote Terminal Interface"
+        echo "============================================================"
+        echo
+        echo "Distribution : ${DISTRO_PRETTY}"
+        echo "Kernel       : $(uname -r)"
+        echo
+        echo "  1) Desktop Optimization"
+        echo "  2) Server Optimization"
+        echo "  3) Storage Optimization"
+        echo "  4) Enterprise Optimization"
+        echo "  5) Security Hardening"
+        echo "  6) Kernel Tuning"
+        echo "  7) Service Analysis"
+        echo "  8) Embedded Optimization"
+        echo "  9) System Information"
+        echo " 10) System Status"
+        echo " 11) View Log"
+        echo " 12) Available Switches"
+        echo "  0) Exit"
+        echo
+
+        printf "Select: "
+
+        local choice
+        read -r choice
+
+        case "$choice" in
+
+            1)
+                opt_desktop
+                pause_screen
+                ;;
+
+            2)
+                opt_server
+                pause_screen
+                ;;
+
+            3)
+                opt_storage
+                pause_screen
+                ;;
+
+            4)
+                enterprise_all
+                pause_screen
+                ;;
+
+            5)
+                enterprise_security
+                pause_screen
+                ;;
+
+            6)
+                enterprise_kernel
+                pause_screen
+                ;;
+
+            7)
+                enterprise_services
+                pause_screen
+                ;;
+
+            8)
+                opt_embedded
+                pause_screen
+                ;;
+
+            9)
+                clear
+                show_system_info
+                pause_screen
+                ;;
+
+            10)
+                clear
+                show_status
+                pause_screen
+                ;;
+
+            11)
+
+                clear
+
+                if [[ -f "$LOG_FILE" ]]; then
+
+                    if command_exists less; then
+                        less "$LOG_FILE"
+                    else
+                        cat "$LOG_FILE"
+                    fi
+
+                else
+
+                    echo "No log file available."
+                    pause_screen
+
+                fi
+
+                ;;
+
+            12)
+                clear
+                list_actions
+                pause_screen
+                ;;
+
+            0)
+                clear
+                return 0
+                ;;
+
+            *)
+                echo
+                echo "Invalid selection."
+                sleep 1
+                ;;
+
+        esac
+
+    done
+}
+
+# =============================================================================
+# ARGUMENT PARSER
+# =============================================================================
+
+parse_args() {
+
+    while [[ $# -gt 0 ]]; do
+
+        case "$1" in
+
+            --help|-h)
+                list_actions
+                exit 0
+                ;;
+
+            --version|-V)
+                echo "${APP_NAME} v${VERSION}"
+                exit 0
+                ;;
+
+            --info)
+                ACTION_INFO=1
+                INTERACTIVE=0
+                ;;
+
+            --status)
+                ACTION_STATUS=1
+                INTERACTIVE=0
+                ;;
+
+            --list)
+                list_actions
+                exit 0
+                ;;
+
+            --desktop)
+                PROFILE_DESKTOP=1
+                INTERACTIVE=0
+                ;;
+
+            --server)
+                PROFILE_SERVER=1
+                INTERACTIVE=0
+                ;;
+
+            --embedded)
+                PROFILE_EMBEDDED=1
+                INTERACTIVE=0
+                ;;
+
+            --storage)
+                OPT_STORAGE=1
+                INTERACTIVE=0
+                ;;
+
+            --mediaserver|--media-server)
+                OPT_MEDIA=1
+                INTERACTIVE=0
+                ;;
+
+            --storageserver|--storage-server)
+                OPT_STORAGE_SERVER=1
+                INTERACTIVE=0
+                ;;
+
+            --idsips|--ids-ips)
+                OPT_IDSIPS=1
+                INTERACTIVE=0
+                ;;
+
+            --enterprise-kernel)
+                ENTERPRISE_KERNEL=1
+                INTERACTIVE=0
+                ;;
+
+            --enterprise-services)
+                ENTERPRISE_SERVICES=1
+                INTERACTIVE=0
+                ;;
+
+            --enterprise-security)
+                ENTERPRISE_SECURITY=1
+                INTERACTIVE=0
+                ;;
+
+            --enterprise-all)
+
+                ENTERPRISE_KERNEL=1
+                ENTERPRISE_SERVICES=1
+                ENTERPRISE_SECURITY=1
+
+                INTERACTIVE=0
+                ;;
+
+            --dry-run)
+                DRY_RUN=1
+                ;;
+
+            --yes|-y)
+                ASSUME_YES=1
+                ;;
+
+            --no-backup)
+                BACKUP_ENABLED=0
+                ;;
+
+            --)
+                shift
+                break
+                ;;
+
+            -*)
+
+                echo
+                log_error "Unknown option: $1"
+                echo "Use --help."
+                exit 2
+                ;;
+
+            *)
+
+                log_error "Unexpected argument: $1"
+                exit 2
+                ;;
+
+        esac
+
+        shift
+
+    done
+}
+
+# =============================================================================
+# CONFIRMATION
+# =============================================================================
+
+confirm_changes() {
+
+    [[ "$DRY_RUN" -eq 1 ]] && return 0
+    [[ "$ASSUME_YES" -eq 1 ]] && return 0
+
+    echo
+    echo "============================================================"
+    echo " WARNING"
+    echo "============================================================"
+    echo
+    echo "TuxTuner will modify system configuration."
+    echo
+    echo "Distribution : ${DISTRO_PRETTY}"
+    echo "Kernel       : $(uname -r)"
+    echo
+    echo "Backups      : ${BACKUP_ENABLED}"
+    echo
+
+    printf "Continue? [y/N]: "
+
+    local answer
+    read -r answer
+
+    case "$answer" in
+
+        y|Y|yes|YES)
+            return 0
+            ;;
+
+        *)
+            log_warning "Operation cancelled."
+            return 1
+            ;;
+
+    esac
+}
+
+# =============================================================================
+# MAIN
+# =============================================================================
+
+main() {
+
+    parse_args "$@"
+
+    # -------------------------------------------------------------------------
+    # Information-only operations
+    # -------------------------------------------------------------------------
+
+    if [[ "$ACTION_INFO" -eq 1 ]] ||
+       [[ "$ACTION_STATUS" -eq 1 ]]; then
+
+        detect_distro
+
+        [[ "$ACTION_INFO" -eq 1 ]] && show_system_info
+        [[ "$ACTION_STATUS" -eq 1 ]] && show_status
+
+        exit 0
     fi
 
-    log_success "TuxTuner operations completed successfully"
-    echo -e "${GREEN}Optimization complete!${NC}"
-    echo -e "Check ${CYAN}$LOG_FILE${NC} for details."
+    # -------------------------------------------------------------------------
+    # Everything else requires root
+    # -------------------------------------------------------------------------
+
+    require_root
+
+    init_logging
+    init_temp
+    detect_distro
+
+    mkdir -p "$STATE_DIR"
+
+    if [[ "$BACKUP_ENABLED" -eq 1 ]]; then
+        mkdir -p "$BACKUP_DIR"
+    fi
+
+    echo
+
+    log_info "${APP_NAME} v${VERSION}"
+    log_info "Terminal-based Linux optimization framework."
+
+    if [[ "$DRY_RUN" -eq 1 ]]; then
+        log_warning "DRY-RUN MODE ENABLED"
+        log_warning "No system changes will be performed."
+    fi
+
+    # -------------------------------------------------------------------------
+    # Interactive
+    # -------------------------------------------------------------------------
+
+    if [[ "$INTERACTIVE" -eq 1 ]]; then
+
+        tui_main_menu
+
+    # -------------------------------------------------------------------------
+    # CLI
+    # -------------------------------------------------------------------------
+
+    else
+
+        if ! confirm_changes; then
+            exit 1
+        fi
+
+        run_cli
+
+    fi
+
+    echo
+    log_success "TuxTuner completed."
+    log_info "Log: ${LOG_FILE}"
+
+    if [[ "$BACKUP_ENABLED" -eq 1 ]]; then
+        log_info "Backups: ${BACKUP_DIR}"
+    fi
 }
 
-# Start the script
-main "$@"
+# =============================================================================
+# START
+# =============================================================================
 
-exit 0
+main "$@"
