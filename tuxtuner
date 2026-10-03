@@ -3,13 +3,12 @@
 # TuxTuner
 # Enterprise Linux Optimization Tool
 #
-# Version: 2.3
+# Version: 1.0
 # Author : Koosha Yeganeh
 # Company: KYGnus 
 #
-# Interfaces:
-#   1. Remote terminal TUI
-#   2. Pure CLI switches
+# Interface:
+#   Pure CLI switches only
 #
 # Designed for:
 #   SSH
@@ -37,8 +36,6 @@ readonly BACKUP_DIR="${STATE_DIR}/backups"
 readonly LOG_DIR="/var/log/tuxtuner"
 readonly LOG_FILE="${LOG_DIR}/tuxtuner.log"
 
-readonly TUI_TITLE="TuxTuner v${VERSION} - Enterprise Linux Optimization"
-
 TMP_DIR="/tmp/tuxtuner_$(date +%Y%m%d_%H%M%S)_$$"
 
 DISTRO=""
@@ -46,7 +43,6 @@ DISTRO_VERSION=""
 DISTRO_FAMILY=""
 DISTRO_PRETTY=""
 
-INTERACTIVE=1
 DRY_RUN=0
 ASSUME_YES=0
 BACKUP_ENABLED=1
@@ -57,7 +53,6 @@ BACKUP_ENABLED=1
 
 ACTION_INFO=0
 ACTION_STATUS=0
-ACTION_LIST=0
 
 PROFILE_DESKTOP=0
 PROFILE_SERVER=0
@@ -96,11 +91,6 @@ command_exists() {
 
 is_root() {
     [[ "$(id -u)" -eq 0 ]]
-}
-
-pause_screen() {
-    printf "\nPress ENTER to continue..."
-    read -r
 }
 
 # =============================================================================
@@ -843,303 +833,12 @@ run_cli() {
         executed=1
     fi
 
-    if [[ "$ENTERPRISE_KERNEL" -eq 1 ]] &&
-       [[ "$ENTERPRISE_SERVICES" -eq 1 ]] &&
-       [[ "$ENTERPRISE_SECURITY" -eq 1 ]]; then
-
-        :
-    fi
-
     if [[ "$executed" -eq 0 ]]; then
         log_error "No action selected."
         return 1
     fi
 
     return 0
-}
-
-# =============================================================================
-# TUI
-# =============================================================================
-
-TUI_BACKTITLE="$TUI_TITLE"
-
-tui_message() {
-
-    local title="$1"
-    local message="$2"
-
-    if command_exists dialog; then
-
-        dialog \
-            --backtitle "$TUI_BACKTITLE" \
-            --title "$title" \
-            --msgbox "$message" \
-            15 70
-
-    else
-
-        echo
-        echo "=== ${title} ==="
-        echo
-        echo "$message"
-        echo
-        pause_screen
-
-    fi
-}
-
-tui_main_menu() {
-
-    while true; do
-
-        if ! command_exists dialog; then
-            tui_terminal_menu
-            return
-        fi
-
-        local choice
-
-        choice=$(
-            dialog \
-                --clear \
-                --backtitle "$TUI_BACKTITLE" \
-                --title "Main Menu" \
-                --menu "Select operation:" \
-                22 78 13 \
-                1 "Desktop Optimization" \
-                2 "Server Optimization" \
-                3 "Storage Optimization" \
-                4 "Enterprise Optimization" \
-                5 "Security Hardening" \
-                6 "Kernel Tuning" \
-                7 "Service Analysis" \
-                8 "Embedded Optimization" \
-                9 "System Information" \
-                10 "System Status" \
-                11 "View Log" \
-                12 "Available Switches" \
-                0 "Exit" \
-                3>&1 1>&2 2>&3
-        ) || break
-
-        case "$choice" in
-
-            1)
-                opt_desktop
-                tui_message "Desktop" "Desktop optimization completed."
-                ;;
-
-            2)
-                opt_server
-                tui_message "Server" "Server optimization completed."
-                ;;
-
-            3)
-                opt_storage
-                tui_message "Storage" "Storage optimization completed."
-                ;;
-
-            4)
-                enterprise_all
-                tui_message "Enterprise" "Enterprise optimization completed."
-                ;;
-
-            5)
-                enterprise_security
-                tui_message "Security" "Security hardening completed."
-                ;;
-
-            6)
-                enterprise_kernel
-                tui_message "Kernel" "Kernel tuning completed."
-                ;;
-
-            7)
-                enterprise_services
-                tui_message "Services" "Service analysis completed."
-                ;;
-
-            8)
-                opt_embedded
-                tui_message "Embedded" "Embedded optimization completed."
-                ;;
-
-            9)
-                show_system_info
-                pause_screen
-                ;;
-
-            10)
-                show_status
-                pause_screen
-                ;;
-
-            11)
-
-                if [[ -f "$LOG_FILE" ]]; then
-
-                    dialog \
-                        --backtitle "$TUI_BACKTITLE" \
-                        --title "TuxTuner Log" \
-                        --textbox "$LOG_FILE" \
-                        30 100
-
-                else
-
-                    tui_message "Log" "Log file does not exist."
-
-                fi
-
-                ;;
-
-            12)
-                tui_message "Switches" "$(list_actions)"
-                ;;
-
-            0)
-                break
-                ;;
-
-        esac
-
-    done
-}
-
-# =============================================================================
-# PURE TERMINAL TUI
-# =============================================================================
-
-tui_terminal_menu() {
-
-    while true; do
-
-        clear
-
-        echo
-        echo "============================================================"
-        echo " ${APP_NAME} v${VERSION}"
-        echo " Remote Terminal Interface"
-        echo "============================================================"
-        echo
-        echo "Distribution : ${DISTRO_PRETTY}"
-        echo "Kernel       : $(uname -r)"
-        echo
-        echo "  1) Desktop Optimization"
-        echo "  2) Server Optimization"
-        echo "  3) Storage Optimization"
-        echo "  4) Enterprise Optimization"
-        echo "  5) Security Hardening"
-        echo "  6) Kernel Tuning"
-        echo "  7) Service Analysis"
-        echo "  8) Embedded Optimization"
-        echo "  9) System Information"
-        echo " 10) System Status"
-        echo " 11) View Log"
-        echo " 12) Available Switches"
-        echo "  0) Exit"
-        echo
-
-        printf "Select: "
-
-        local choice
-        read -r choice
-
-        case "$choice" in
-
-            1)
-                opt_desktop
-                pause_screen
-                ;;
-
-            2)
-                opt_server
-                pause_screen
-                ;;
-
-            3)
-                opt_storage
-                pause_screen
-                ;;
-
-            4)
-                enterprise_all
-                pause_screen
-                ;;
-
-            5)
-                enterprise_security
-                pause_screen
-                ;;
-
-            6)
-                enterprise_kernel
-                pause_screen
-                ;;
-
-            7)
-                enterprise_services
-                pause_screen
-                ;;
-
-            8)
-                opt_embedded
-                pause_screen
-                ;;
-
-            9)
-                clear
-                show_system_info
-                pause_screen
-                ;;
-
-            10)
-                clear
-                show_status
-                pause_screen
-                ;;
-
-            11)
-
-                clear
-
-                if [[ -f "$LOG_FILE" ]]; then
-
-                    if command_exists less; then
-                        less "$LOG_FILE"
-                    else
-                        cat "$LOG_FILE"
-                    fi
-
-                else
-
-                    echo "No log file available."
-                    pause_screen
-
-                fi
-
-                ;;
-
-            12)
-                clear
-                list_actions
-                pause_screen
-                ;;
-
-            0)
-                clear
-                return 0
-                ;;
-
-            *)
-                echo
-                echo "Invalid selection."
-                sleep 1
-                ;;
-
-        esac
-
-    done
 }
 
 # =============================================================================
@@ -1164,12 +863,10 @@ parse_args() {
 
             --info)
                 ACTION_INFO=1
-                INTERACTIVE=0
                 ;;
 
             --status)
                 ACTION_STATUS=1
-                INTERACTIVE=0
                 ;;
 
             --list)
@@ -1179,52 +876,42 @@ parse_args() {
 
             --desktop)
                 PROFILE_DESKTOP=1
-                INTERACTIVE=0
                 ;;
 
             --server)
                 PROFILE_SERVER=1
-                INTERACTIVE=0
                 ;;
 
             --embedded)
                 PROFILE_EMBEDDED=1
-                INTERACTIVE=0
                 ;;
 
             --storage)
                 OPT_STORAGE=1
-                INTERACTIVE=0
                 ;;
 
             --mediaserver|--media-server)
                 OPT_MEDIA=1
-                INTERACTIVE=0
                 ;;
 
             --storageserver|--storage-server)
                 OPT_STORAGE_SERVER=1
-                INTERACTIVE=0
                 ;;
 
             --idsips|--ids-ips)
                 OPT_IDSIPS=1
-                INTERACTIVE=0
                 ;;
 
             --enterprise-kernel)
                 ENTERPRISE_KERNEL=1
-                INTERACTIVE=0
                 ;;
 
             --enterprise-services)
                 ENTERPRISE_SERVICES=1
-                INTERACTIVE=0
                 ;;
 
             --enterprise-security)
                 ENTERPRISE_SECURITY=1
-                INTERACTIVE=0
                 ;;
 
             --enterprise-all)
@@ -1232,8 +919,6 @@ parse_args() {
                 ENTERPRISE_KERNEL=1
                 ENTERPRISE_SERVICES=1
                 ENTERPRISE_SECURITY=1
-
-                INTERACTIVE=0
                 ;;
 
             --dry-run)
@@ -1342,7 +1027,7 @@ main() {
     # Everything else requires root
     # -------------------------------------------------------------------------
 
-    require_root
+    require_root "$@"
 
     init_logging
     init_temp
@@ -1364,27 +1049,11 @@ main() {
         log_warning "No system changes will be performed."
     fi
 
-    # -------------------------------------------------------------------------
-    # Interactive
-    # -------------------------------------------------------------------------
-
-    if [[ "$INTERACTIVE" -eq 1 ]]; then
-
-        tui_main_menu
-
-    # -------------------------------------------------------------------------
-    # CLI
-    # -------------------------------------------------------------------------
-
-    else
-
-        if ! confirm_changes; then
-            exit 1
-        fi
-
-        run_cli
-
+    if ! confirm_changes; then
+        exit 1
     fi
+
+    run_cli
 
     echo
     log_success "TuxTuner completed."
